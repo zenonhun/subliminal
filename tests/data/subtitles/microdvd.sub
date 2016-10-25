@@ -1,0 +1,15 @@
+{0}{100}{y:i}italic text here|not here
+{110}{200}{y:b}bold text here|not here
+{210}{300}{y:u}underlined text here|not here
+{310}{400}{y:s}stroked text here|not here
+{410}{500}{Y:i}italic text here|and here
+{510}{600}{Y:b}bold text here|and here
+{610}{700}{Y:u}underlined text here|and here
+{710}{800}{Y:s}stroked text here|and here
+{810}{900}{f:Arial}Arial text here|not here
+{910}{1000}{F:Arial}Arial text here|and here
+{1010}{1100}{s:10}size 10 text here|not here
+{1110}{1200}{S:10}size 10 text here|and here
+{1210}{1300}{c:$0000FF}red text here|not here
+{1310}{1400}{C:$0000FF}red text here|and here
+{1410}{1500}{Y:b}{y:i}bold and italic text here|{y:s}bold and stroked text here
