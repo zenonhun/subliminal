@@ -163,12 +163,13 @@ if __name__ == '__main__':
     import glob
     import chardet
 
-    for path in glob.glob('/media/blackhole/movies/L*/*.srt'):
+    for path in glob.glob('/media/blackhole/movies/J*/*.srt'):
         with open(path, 'rb') as f:
             encoding = chardet.detect(f.read())['encoding']
         try:
             with io.open(path, encoding=encoding) as f:
                 for cue in read_cue(f):
+                    print cue
                     pass
                 print 'OK:', os.path.basename(path)
         except UnicodeDecodeError:

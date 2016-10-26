@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-from datetime import time
+from __future__ import division
+from datetime import datetime, time, timedelta
 import logging
 import re
 
@@ -7,15 +8,18 @@ from bs4 import NavigableString, Tag
 import six
 
 from subliminal.providers import ParserBeautifulSoup
-from subliminal.subtitles import Bold, Cue, Font, Italic, Underline
+from subliminal.subtitles import Bold, Cue, Font, Italic, Underline, CueText
 
 logger = logging.getLogger(__name__)
 
-#: Line parsing regex
-line_re = re.compile(r'{(?P<start_frame>\d+)}{(?P<stop_frame>\d+)}(?P<text>.*)')
+#: Cue parsing regex
+cue_re = re.compile(r'^{(?P<start_frame>\d+)}{(?P<stop_frame>\d+)}(?P<styles>(?:{[YFSC]:[\w,$]+})*)(?P<lines>.*)$')
+
+# Line parsing regex
+line_re = re.compile(r'^(?P<styles>(?:{[yfsc]:[\w,$]+})*)(?P<text>.*)$')
 
 #: Control parsing regex
-control_re = re.compile(r'{(?P<code>[yYfFsScC]):(?P<value>[\w$]+)}')
+control_re = re.compile(r'{(?P<code>[yYfFsScC]):(?P<value>[\w,$]+)}')
 
 
 class MicroDVDReadError(Exception):
@@ -23,8 +27,14 @@ class MicroDVDReadError(Exception):
     pass
 
 
-def read_cue(stream):
+def read_cue(stream, fps=25):
     """Generate Cues from a text stream.
+
+    {start_frame}{stop_frame}{Y:b,i}{c:$0000ff}{s:10}This is really|{y:u}CRAZY!
+    `-----------------------´`-----´`-----------------------------------------´
+             timings        cue styles                      lines
+                                     `--------------´`-------------´
+                                       line styles        text
 
     :param stream: the text stream.
     :return: the parsed cue.
@@ -34,45 +44,68 @@ def read_cue(stream):
 
     for line in stream:
         line = line.strip()
+        match = cue_re.match(line)
 
-        line_match = line_re.match(line)
+        if not match:
+            raise ValueError('Cue does not match')
 
-        for cue_line in line_match.group('text').split('|'):
-            cue_styles = {}
-            while True:
-                control_match = control_re.match(cue_line)
-                if not control_match:
-                    break
-
-                cue_line = cue_line[control_match.endpos]
-
-
-def parse_components(elements):
-    """Generate :class:`~subliminal.subtitles.Component` from an iterable of
-    :class:`~bs4.Tag` or :class:`~bs4.NavigableString`.
-
-    :param list elements: the elements to parse.
-    :return: the parsed component.
-    :rtype: collections.Iterable[:class:`~subliminal.subtitles.Component`]
-
-    """
-    for element in elements:
-        if isinstance(element, Tag):
-            if element.name == 'b':
-                yield Bold(list(parse_components(element.children)))
-            elif element.name == 'i':
-                yield Italic(list(parse_components(element.children)))
-            elif element.name == 'u':
-                yield Underline(list(parse_components(element.children)))
-            elif element.name == 'font':
-                yield Font(element.attrs.get('color'), element.attrs.get('size'),
-                           list(parse_components(element.children)))
-            else:
-                raise ValueError('Unknown tag %r' % element.name)
-        elif isinstance(element, NavigableString):
-            yield six.text_type(element)
+        if match.group('styles'):
+            yield Cue((datetime.min + timedelta(seconds=int(match.group('start_frame')) / fps)).time(), (datetime.min + timedelta(seconds=int(match.group('stop_frame')) / fps)).time(), [CueText(list(parse_components(match.group('lines').split('|'))), styles=parse_styles(match.group('styles')))])
         else:
-            raise ValueError('Unknown element %r' % element)
+            yield Cue((datetime.min + timedelta(seconds=int(match.group('start_frame')) / fps)).time(), (datetime.min + timedelta(seconds=int(match.group('stop_frame')) / fps)).time(), list(parse_components(match.group('lines').split('|'))))
+
+
+def parse_components(lines):
+    last = len(lines) - 1
+    for i, line in enumerate(lines):
+        match = line_re.match(line)
+
+        if not match:
+            raise ValueError('Line does not match')
+
+        if match.group('styles'):
+            yield CueText([match.group('text')], styles=parse_styles(match.group('styles')))
+        else:
+            yield match.group('text')
+        if i != last:
+            yield '\n'
+
+
+def parse_styles(controls):
+    styles = {}
+
+    while controls:
+        # match the control
+        match = control_re.match(controls)
+        if not match:
+            raise ValueError('Control does not match')
+        code, value = match.group('code').upper(), match.group('value')
+
+        # parse the value for each possible code
+        if code == 'Y':
+            for value in value.split(','):
+                if value == 'b':
+                    styles['font-weight'] = 'bold'
+                elif value == 'i':
+                    styles['font-style'] = 'italic'
+                elif value == 'u':
+                    styles['text-decoration'] = 'underline'
+                elif value == 's':
+                    styles['text-decoration'] = 'line-through'
+                else:
+                    raise ValueError('Unsupported control value for code')
+        elif code == 'F':
+            styles['font-family'] = value
+        elif code == 'S':
+            styles['font-size'] = int(value)
+        elif code == 'C':
+            styles['font-color'] = '#' + value[5:7] + value[3:5] + value[1:3]
+        else:
+            raise ValueError('Unsupported control code')
+
+        controls = controls[match.regs[0][1]:]
+
+    return styles
 
 
 def write_cue(cue):
@@ -89,20 +122,8 @@ class SubripSubtitle(object):
 
 
 if __name__ == '__main__':
-    import io
-    import os
-    import glob
-    import chardet
-
-    for path in glob.glob('tests/data/subtitles/*.sub'):
-        with open(path, 'rb') as f:
-            encoding = chardet.detect(f.read())['encoding']
-        try:
-            with io.open(path, encoding=encoding) as f:
-                for cue in read_cue(f):
-                    pass
-                print 'OK:', os.path.basename(path)
-        except UnicodeDecodeError:
-            print 'KO Unicode:', os.path.basename(path)
-        except:
-            print 'KO:', os.path.basename(path)
+    print list(parse_styles('{S:10}{Y:s}{y:i,b}'))
+    print list(parse_components(['{y:i,b}Hello', '{s:16}World!']))
+    with open('tests/data/subtitles/microdvd.sub') as f:
+        for cue in read_cue(f):
+            print cue
