@@ -1,31 +1,53 @@
 # -*- coding: utf-8 -*-
-from datetime import time
-
-
 class Subtitle(object):
     def __init__(self, styles):
         self.styles = styles
 
 
-class CueText(object):
-    def __init__(self, children, styles=None):
-        self.styles = styles or {}
-        self.children = children
+class Cue(object):
+    """A single subtitle cue with timings and components.
 
-    def __iter__(self):
-        return iter(self.children)
+    :param datetime.timedelta start_time: start time.
+    :param datetime.timedelta end_time: end time.
+    :param list components: cue components.
 
-    def __len__(self):
-        return len(self.children)
-
-    def __str__(self):
-        return ''.join(str(c) for c in self.children)
+    """
+    def __init__(self, start_time, end_time, text):
+        self.start_time = start_time
+        self.end_time = end_time
+        self.text = text
 
     def __repr__(self):
-        return '<{name} styles={styles}>{children}</{name}>'.format(name=self.__class__.__name__, styles=self.styles,
-                                                                    children=''.join(repr(c) for c in self.children))
+        return '<Cue [{start_time} -> {end_time}] {text}>'.format(start_time=self.start_time, end_time=self.end_time,
+                                                                  text=repr(self.text))
 
 
+class CueText(object):
+    """Text with styles in a Cue."""
+    def __init__(self, contents=None, styles=None):
+        self.contents = contents or []
+        self.styles = styles or {}
+
+    def __iter__(self):
+        return iter(self.contents)
+
+    def __len__(self):
+        return len(self.contents)
+
+    def __getitem__(self, item):
+        return self.contents[item]
+
+    def __str__(self):
+        return ''.join(str(c) for c in self)
+
+    def __repr__(self):
+        if not self.styles:
+            return '<CueText>{children}</CueText>'.format(children=''.join(repr(c) for c in self))
+
+        return '<CueText styles={styles}>{children}</CueText>'.format(styles=self.styles,
+                                                                      children=''.join(repr(c) for c in self))
+
+'''
 class Component(object):
     """Base class for cue text.
 
@@ -83,26 +105,4 @@ class Font(Component):
             name=self.__class__.__name__, color=self.color, size=self.size,
             components=''.join(repr(c) for c in self.components)
         )
-
-
-class Cue(object):
-    """A single subtitle cue with timings and components.
-
-    :param datetime.time start_time: start time.
-    :param datetime.time end_time: end time.
-    :param list components: cue components.
-
-    """
-    def __init__(self, start_time, end_time, components):
-        self.start_time = start_time
-        self.end_time = end_time
-        self.components = components
-
-    def __repr__(self):
-        return '<Cue [{start_time} -> {end_time}] {text}>'.format(start_time=self.start_time, end_time=self.end_time,
-                                                                  text=''.join(repr(c) for c in self.components))
-
-
-if __name__ == '__main__':
-    cue = Cue(time(), time(1), [Bold('Hello')])
-    print repr(cue)
+'''

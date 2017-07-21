@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from datetime import time
+from datetime import timedelta
 import logging
 import re
 
@@ -26,8 +26,110 @@ class SubripReadError(Exception):
     pass
 
 
+class SubripWriteError(Exception):
+    """Exception raised on writing error."""
+    pass
+
+
+def read_timing(timing):
+    """Read a timing string as a :class:`datetime.timedelta`.
+    
+    :param str timing: the timing string.
+    :return: the timing as timedelta.
+    :rtype: :class:`datetime.timedelta`
+    :raise: :class:`SubripReadError` if the timing is not in the expected format.
+    
+    """
+    match = timing_re.match(timing)
+    if not match:
+        raise SubripReadError('Failed to parse timing %r' % timing)
+
+    return timedelta(hours=int(match.group('hour')), minutes=int(match.group('minute')),
+                     seconds=int(match.group('second')), milliseconds=int(match.group('millisecond')))
+
+
+def write_timing(timing):
+    """Write a timedelta timing as str.
+    
+    :param datetime.timedelta timing: the timedelta timing.
+    :return: the timing as str.
+    :rtype: str
+    :raise: :class:`SubripWriteError` if the timing exceeds the maximum possible value.
+    
+    """
+    if timing > timedelta(hours=99, minutes=59, seconds=59, milliseconds=999):
+        raise SubripWriteError('Maximum value for timing exceeded')
+
+    seconds = timing.total_seconds()
+
+    return '%02d:%02d:%02d,%03d' % (seconds // 3600, (seconds % 3600) // 60,
+                                    seconds % 60,  timing.microseconds // 1000)
+
+
+def parse_texts(elements):
+    """Recursively generate :class:`~subliminal.subtitles.CueText` from an iterable of
+    :class:`~bs4.Tag` or :class:`~bs4.NavigableString`.
+
+    :param list elements: the elements to parse.
+    :return: a list of :class:`~subliminal.subtitles.CueText`.
+    :rtype: list
+
+    """
+    texts = []
+    for element in elements:
+        if isinstance(element, Tag):
+            # convert tag name to css styles
+            styles = {}
+            if element.name == 'b':
+                styles['font-weight'] = 'bold'
+            elif element.name == 'i':
+                styles['font-style'] = 'italic'
+            elif element.name == 'u':
+                styles['text-decoration'] = 'underline'
+            elif element.name == 'font':
+                if 'color' in element.attrs:
+                    styles['font-color'] = element.attrs['color']
+                if 'size' in element.attrs:
+                    styles['font-size'] = element.attrs['size']
+
+            # check for successful tag name parsing
+            if not styles:
+                raise ValueError('Unknown tag %r' % element.name)
+
+            # add the cue text with its children and styles
+            texts.append(CueText(parse_texts(element.children), styles=styles))
+        elif isinstance(element, NavigableString):
+            # add the string as str
+            texts.append(six.text_type(element))
+        else:
+            raise ValueError('Unknown element %r' % element)
+
+    return texts
+
+
+def read_text(text):
+    """Read a SubRip-formated text as :class:`~subliminal.subtitles.CueText`"""
+    soup = ParserBeautifulSoup(text.strip(), ['lxml', 'html.parser'])
+    texts = parse_texts(soup.children)
+    if not texts:
+        raise SubripReadError('Cue has no text')
+
+    return CueText(texts)
+
+
 def read_cue(stream):
     """Generate Cues from a text stream.
+    
+    1
+    00:01:43,438 --> 00:01:47,150
+    Something is coming.
+    Something hungry for blood.
+    
+    {index}                            starts at 1
+    {start_time} --> {end_time}        hours:minutes:seconds,milliseconds
+    {lines}                            with possible tags: <i>, <b>, <u>, <font color="ffffff"> and <font size=16>
+    
+    2 blank lines separate cues.
 
     :param stream: the text stream.
     :return: the parsed cue.
@@ -36,7 +138,7 @@ def read_cue(stream):
     """
     state = INDEX
     text = ''
-    start_time = end_time = time()
+    start_time = end_time = timedelta()
     previous_index = 0
 
     for line in stream:
@@ -73,19 +175,9 @@ def read_cue(stream):
             if len(timings) != 2:
                 raise SubripReadError('Unexpected number of timings (%d)' % len(timings))
 
-            # parse start time
-            match = timing_re.match(timings[0].strip())
-            if not match:
-                raise SubripReadError('Failed to parse timing %r' % timings[0])
-            start_time = time(int(match.group('hour')), int(match.group('minute')), int(match.group('second')),
-                              int(match.group('millisecond')) * 1000)
-
-            # parse end time
-            match = timing_re.match(timings[1].strip())
-            if not match:
-                raise SubripReadError('Failed to parse timing %r' % timings[1])
-            end_time = time(int(match.group('hour')), int(match.group('minute')), int(match.group('second')),
-                            int(match.group('millisecond')) * 1000)
+            # parse timings
+            start_time = read_timing(timings[0].strip())
+            end_time = read_timing(timings[1].strip())
 
             # go to next state
             state = TEXT
@@ -98,54 +190,72 @@ def read_cue(stream):
                 continue
 
             # parse the full text and yield the entire cue
-            soup = ParserBeautifulSoup(text.strip(), ['lxml', 'html.parser'])
-            cue = Cue(start_time, end_time, list(parse_components(soup.children)))
-            logger.debug('Parsed cue %r', cue)
-            yield cue
+            yield Cue(start_time, end_time, read_text(text))
 
             # reset state
             state = INDEX
 
+    else:
+        # yield the last cue
+        if state == TEXT:
+            yield Cue(start_time, end_time, read_text(text))
 
-def parse_components(elements):
-    """Recursively generate :class:`~subliminal.subtitles.CueText` from an iterable of
-    :class:`~bs4.Tag` or :class:`~bs4.NavigableString`.
 
-    :param list elements: the elements to parse.
-    :return: the parsed component.
-    :rtype: collections.Iterable[:class:`~subliminal.subtitles.Component`]
+def generate_lines(cues):
+    for i, cue in enumerate(cues, 1):
+        yield str(i)
+        yield write_timing(cue.start_time) + ' --> ' + write_timing(cue.end_time)
+        yield ''.join(generate_text(cue.text))
+        yield ''
 
-    """
-    for element in elements:
-        if isinstance(element, Tag):
-            # convert tag name to css styles
-            styles = {}
-            if element.name == 'b':
-                styles['font-weight'] = 'bold'
-            elif element.name == 'i':
-                styles['font-style'] = 'italic'
-            elif element.name == 'u':
-                styles['text-decoration'] = 'underline'
-            elif element.name == 'font':
-                if 'color' in element.attrs:
-                    styles['font-color'] = element.attrs['color']
-                if 'size' in element.attrs:
-                    styles['font-size'] = element.attrs['size']
+'''To delete
+def write_child(child, template=None):
+    template = template or '{children}'
+    if isinstance(child, CueText):
+        for k, v in child.styles.items():
+            if (k, v) == ('font-weight', 'bold'):
+                template = '<b>' + template + '</b>'
+            elif (k, v) == ('font-style', 'italic'):
+                template = '<i>' + template + '</i>'
+            elif k == 'font-size':
+                template = ('<font size="%d">' % v) + template + '</font>'
+            elif k == 'font-color':
+                template = ('<font color="%s">' % v) + template + '</font>'
+            else:
+                logger.warning('Unsupported style %s: %s', k, v)
+    else:
+        print(child)
+'''
 
-            # check for successful tag name parsing
-            if not styles:
-                raise ValueError('Unknown tag %r' % element.name)
 
-            # yield the cue text with its children and styles
-            yield CueText(parse_components(element.children), styles=styles)
-        elif isinstance(element, NavigableString):
-            yield six.text_type(element)
+def generate_text(text):
+    if isinstance(text, CueText):
+        if text.styles:
+            k, v = text.styles.popitem()
+            if (k, v) == ('font-weight', 'bold'):
+                yield '<b>'
+                yield from generate_text(text)
+                yield '</b>'
+            elif (k, v) == ('font-style', 'italic'):
+                yield '<i>'
+                yield from generate_text(text)
+                yield '</i>'
+            elif k == 'font-size':
+                yield '<font size="%d">' % v
+                yield from generate_text(text)
+                yield '</font>'
+            elif k == 'font-color':
+                yield '<font color="%s">' % v
+                yield from generate_text(text)
+                yield '</font>'
+            else:
+                logger.warning('Unsupported style %s: %s', k, v)
+                yield from generate_text(text)
         else:
-            raise ValueError('Unknown element %r' % element)
-
-
-def write_cue(cue):
-    pass
+            for child in text.children:
+                yield from generate_text(child)
+    else:
+        yield text
 
 
 class SubripSubtitle(object):
@@ -158,21 +268,7 @@ class SubripSubtitle(object):
 
 
 if __name__ == '__main__':
-    import io
-    import os
-    import glob
-    import chardet
-
-    for path in glob.glob('/media/blackhole/movies/J*/*.srt'):
-        with open(path, 'rb') as f:
-            encoding = chardet.detect(f.read())['encoding']
-        try:
-            with io.open(path, encoding=encoding) as f:
-                for cue in read_cue(f):
-                    print cue
-                    pass
-                print 'OK:', os.path.basename(path)
-        except UnicodeDecodeError:
-            print 'KO Unicode:', os.path.basename(path)
-        except:
-            raise
+    path = '/home/antoine/PycharmProjects/subliminal/tests/data/subtitles/subrip.srt'
+    with open(path) as f:
+        for line in generate_lines(read_cue(f)):
+            print(line)

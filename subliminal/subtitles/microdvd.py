@@ -29,14 +29,21 @@ class MicroDVDReadError(Exception):
 
 def read_cue(stream, fps=25):
     """Generate Cues from a text stream.
+    
+    {2586}{2679}Something is coming.|Something hungry for blood.
 
-    {start_frame}{stop_frame}{Y:b,i}{c:$0000ff}{s:10}This is really|{y:u}CRAZY!
-    `-----------------------´`-----´`-----------------------------------------´
-             timings        cue styles                      lines
-                                     `--------------´`-------------´
-                                       line styles        text
+    {start_frame}{stop_frame}{Y:b,i}{c:$0000ff}{s:10}Don't|{y:u}Panic!
+    `-----------------------´`-----´`--------------------------------´
+             timings        cue styles            lines
+                                     `-------------´`----´
+                       first line ->     styles      text
+                                                          `----´`-----´
+                                          second line ->  styles  text
+    
+    line ending character separate cues.
 
     :param stream: the text stream.
+    :param int fps: frame per second of the video.
     :return: the parsed cue.
     :rtype: collections.Iterable[:class:`~subliminal.subtitles.Cue`]
 
@@ -49,10 +56,18 @@ def read_cue(stream, fps=25):
         if not match:
             raise ValueError('Cue does not match')
 
+        # read timings
+        start_time = (datetime.min + timedelta(seconds=int(match.group('start_frame')) / fps)).time()
+        end_time = (datetime.min + timedelta(seconds=int(match.group('stop_frame')) / fps)).time()
+
+        # read components
         if match.group('styles'):
-            yield Cue((datetime.min + timedelta(seconds=int(match.group('start_frame')) / fps)).time(), (datetime.min + timedelta(seconds=int(match.group('stop_frame')) / fps)).time(), [CueText(list(parse_components(match.group('lines').split('|'))), styles=parse_styles(match.group('styles')))])
+            components = [CueText(list(parse_components(match.group('lines').split('|'))),
+                                  styles=parse_styles(match.group('styles')))]
         else:
-            yield Cue((datetime.min + timedelta(seconds=int(match.group('start_frame')) / fps)).time(), (datetime.min + timedelta(seconds=int(match.group('stop_frame')) / fps)).time(), list(parse_components(match.group('lines').split('|'))))
+            components = list(parse_components(match.group('lines').split('|')))
+
+        yield Cue(start_time, end_time, components)
 
 
 def parse_components(lines):
@@ -122,8 +137,8 @@ class SubripSubtitle(object):
 
 
 if __name__ == '__main__':
-    print list(parse_styles('{S:10}{Y:s}{y:i,b}'))
-    print list(parse_components(['{y:i,b}Hello', '{s:16}World!']))
+    print(list(parse_styles('{S:10}{Y:s}{y:i,b}')))
+    print(list(parse_components(['{y:i,b}Hello', '{s:16}World!'])))
     with open('tests/data/subtitles/microdvd.sub') as f:
         for cue in read_cue(f):
-            print cue
+            print(cue)
